@@ -61,44 +61,39 @@ key = next((k for k, v in months_dict.items() if v == month), None)
 past_month = months_dict.get(key - 1) # Закрепляем в переменную значение предыдущего месяца
 
 
-
+# --- Вспомогательная функция для предподготовнки табличных данных
+def prepare(sheet):
+    data = sheet.get_all_values()
+    df = pd.DataFrame(data)
+    df = df.loc[3:]
+    df_basic = df.copy()
+    df_basic.columns = df.iloc[0]
+    df_basic = df_basic[1:].reset_index(drop=True)
+    #Определеяем колонку "Дата" как новый индекс в формате datetime
+    df_basic['Дата'] = pd.to_datetime(df_basic['Дата'], format='%d.%m.%Y', errors="coerce")
+    df_basic = df_basic.dropna(subset=['Дата']) 
+    df_basic = df_basic.set_index('Дата')
 
 # --- Получение данных со всего листа текущего месяца ---
 def get_sample_data():
     sheet = client.open_by_key('1o1mIcsXQht1NFhgsq7CMKI3derC8xOSrRgGC9GYu144').worksheet(f'{month} {year}')
-    data = sheet.get_all_values()
-    df = pd.DataFrame(data)
-    df = df.loc[3:]
-    df_basic = df.copy()
-    df_basic.columns = df.iloc[0]
-    df_basic = df_basic[1:].reset_index(drop=True)
-    df_basic = df_basic.set_index('Дата')
-
-    return df_basic
+    return prepare(sheet)
 
 # --- Получение данных со всего листа прошлого месяца ---
 def get_sample_data_past_month():
     sheet = client.open_by_key('1o1mIcsXQht1NFhgsq7CMKI3derC8xOSrRgGC9GYu144').worksheet(f'{past_month} {year}')
-    data = sheet.get_all_values()
-    df = pd.DataFrame(data)
-    df = df.loc[3:]
-    df_basic = df.copy()
-    df_basic.columns = df.iloc[0]
-    df_basic = df_basic[1:].reset_index(drop=True)
-    df_basic = df_basic.set_index('Дата')
-
-    return df_basic
+    return prepare(sheet)
 
 # --- Выделяем отдельно данные от Я.метрик, скармливая в функцию весь текущий или предыдущий месяц ---
 def get_ya_metrik(all_data):
     return all_data().iloc[:, :10][['номер недели', 'Трафик', 'Уникальные', 'vs LY', 'Переход в каталог', 'Положил в корзину', 'Оформил заказ']]
 
 # --- Выделяем отдельно данные о продажах
-def get_basic_data(all_data):
+def get_sales_data(all_data):
     return all_data()[['План Руб', 'План Заказы', 'Заказы Сайт, шт', 'Сумма заказов РУБ']]
 
 
-# --- Генерация графика и возврат файла-объекта ---
+'''# --- Генерация графика и возврат файла-объекта ---
 def generate_chart_bytes(df: pd.DataFrame) -> bytes:
     plt.figure(figsize=(6, 4), dpi=150)
     plt.plot(df["date"], df["sales"], marker="o", linewidth=2, markersize=4)
@@ -113,7 +108,7 @@ def generate_chart_bytes(df: pd.DataFrame) -> bytes:
     plt.savefig(buf, format="png")
     buf.seek(0)
     plt.close()
-    return buf.read()
+    return buf.read()'''
 
 
 
@@ -153,8 +148,12 @@ async def cb_back_to_main(callback: CallbackQuery):
 # --- Обработчик: Базовая статистика по яндекс метрикам за прошлый день(последний доступный)
 @router.callback_query(F.data == 'stats:metrics')
 async def stats_ya_metrics(callback: CallbackQuery):
-    df = get_ya_metrik(get_sample_data)
-    day_ya_info = df.loc[full_date] # Получаем  данные от Я.метрик за прошедшую дату
+    raw_df = await asyncio.to_thread(get_sample_data)
+    df = get_ya_metrik(raw_df)
+    # Получаем  данные от Я.метрик за прошедшую дату
+    prev_date = pd.to_datetime(full_date, format='%d.%m.%Y')
+    day_ya_info = df.loc[prev_date]
+
     day_ya_info = (day_ya_info.astype('str')  
                         .str.replace(r'\s+', '', regex=True)
                         .astype('float32')) # Убираем лишние пробелы во всей таблице и переводим строчные даннын в числовые
@@ -174,8 +173,20 @@ async def stats_ya_metrics(callback: CallbackQuery):
 
 @router.callback_query(F.data == 'stats:sales')
 async def stats_sales(callback: CallbackQuery):
-    df = get_basic_data(get_sample_data)
-    
+    raw_df = await asyncio.to_thread(get_sample_data)
+    df = get_sales_data(raw_df)
+
+    # Получаем данные по продажам в этом месяце за последние 5 дней
+    df = df.replace(r'^\s*$', None, regex=True)
+    sales_df = df.dropna(subset=['Сумма заказов РУБ'])
+    last_sales_rows = sales_df.iloc[-1:-6]
+
+    last_sales_rows['Доля'] = last_sales_rows['Сумма заказов РУБ']/ df_sales_last5['План Руб'] 
+    last_sales_rows['Ср. чек'] = last_sales_rows['Сумма заказов РУБ']/ df_sales_last5['Заказы Сайт, шт']
+    last_sales_rows = last_sales_rows.fillna('нет данных')
+
+    df_ = get_ya_metrik(raw_df).loc[last_sales_rows.index]
+    df_result = pd.merge(last_sales_rows, df_,)
 
 
 
