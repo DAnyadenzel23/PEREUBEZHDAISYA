@@ -11,7 +11,7 @@ from datetime import timedelta
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import matplotlib.pyplot as plt
@@ -74,7 +74,9 @@ def prepare(sheet):
     df_basic = df_basic.dropna(subset=['Дата']) 
     df_basic = df_basic.set_index('Дата')
 
-# --- Получение данных со всего листа текущего месяца ---
+    return df_basic
+
+# --- Получение данных со всего листа текущего месяца
 def get_sample_data():
     sheet = client.open_by_key('1o1mIcsXQht1NFhgsq7CMKI3derC8xOSrRgGC9GYu144').worksheet(f'{month} {year}')
     return prepare(sheet)
@@ -86,11 +88,11 @@ def get_sample_data_past_month():
 
 # --- Выделяем отдельно данные от Я.метрик, скармливая в функцию весь текущий или предыдущий месяц ---
 def get_ya_metrik(all_data):
-    return all_data().iloc[:, :10][['номер недели', 'Трафик', 'Уникальные', 'vs LY', 'Переход в каталог', 'Положил в корзину', 'Оформил заказ']]
+    return all_data.iloc[:, :10][['номер недели', 'Трафик', 'Уникальные', 'vs LY', 'Переход в каталог', 'Положил в корзину', 'Оформил заказ']]
 
 # --- Выделяем отдельно данные о продажах
 def get_sales_data(all_data):
-    return all_data()[['План Руб', 'План Заказы', 'Заказы Сайт, шт', 'Сумма заказов РУБ']]
+    return all_data[['План Руб', 'План Заказы', 'Заказы Сайт, шт', 'Сумма заказов РУБ']]
 
 
 '''# --- Генерация графика и возврат файла-объекта ---
@@ -111,7 +113,12 @@ def generate_chart_bytes(df: pd.DataFrame) -> bytes:
     return buf.read()'''
 
 
-
+async def set_main_menu(bot: Bot):
+    main_menu_commands = [
+        BotCommand(command='/start', description='Запустить бота / Главное меню'),
+        BotCommand(command='/help', description='❓Помощь и описание кнопок')
+    ]
+    await bot.set_my_commands(main_menu_commands)
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
@@ -171,6 +178,17 @@ async def stats_ya_metrics(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=stats_keyboard())
     await callback.answer()           
 
+# --- Функция для формирования текста выдачи статистики по продажам
+def text_func(line):
+    if pd.isna(line['Сумма заказов РУБ']):
+        return f'За {line.name.strftime('%d.%m.%Y')} нет данных'
+    else:
+        return (f"{line.name.strftime('%d.%m.%Y')}:\n"
+                 f"🔵Доля выполнения плана на день: {line['Доля']:.2%}\n"
+                 f"🔵Ср. чек: {line['Ср. чек']:.0f} руб.\n"
+                 f"🔵CR оформленных заказов: {line['CTR оплаченного заказа']}")
+        
+
 @router.callback_query(F.data == 'stats:sales')
 async def stats_sales(callback: CallbackQuery):
     raw_df = await asyncio.to_thread(get_sample_data)
@@ -178,18 +196,29 @@ async def stats_sales(callback: CallbackQuery):
 
     # Получаем данные по продажам в этом месяце за последние 5 дней
     df = df.replace(r'^\s*$', None, regex=True)
-    sales_df = df.dropna(subset=['Сумма заказов РУБ'])
-    last_sales_rows = sales_df.iloc[-1:-6]
-
-    last_sales_rows['Доля'] = last_sales_rows['Сумма заказов РУБ']/ df_sales_last5['План Руб'] 
-    last_sales_rows['Ср. чек'] = last_sales_rows['Сумма заказов РУБ']/ df_sales_last5['Заказы Сайт, шт']
-    last_sales_rows = last_sales_rows.fillna('нет данных')
+    end_date = pd.to_datetime(full_date, format='%d.%m.%Y')
+    start_date = end_date - timedelta(days=4)
+    last_sales_rows = df.loc[start_date:end_date].copy()  
 
     df_ = get_ya_metrik(raw_df).loc[last_sales_rows.index]
-    df_result = pd.merge(last_sales_rows, df_,)
+    df_result = pd.concat([last_sales_rows, df_],axis=1)
 
+    # Вновь убираем лишние пробелы из всех строк таблицы и переводим данные в числовой формат
+    df_result = df_result.astype(str).replace(r'\s+', '', regex=True)
+    df_result = df_result.apply(pd.to_numeric, errors='coerce')
 
+    df_result['CTR оплаченного заказа'] = round(df_result['Оформил заказ']/ df_result['Заказы Сайт, шт'], 2) *100
+    df_result['CTR оплаченного заказа'] = df_result['CTR оплаченного заказа'].astype('str')+'%'
+    df_result['CTR оплаченного заказа'] = df_result['CTR оплаченного заказа'].replace('nan%', 'нет данных')
+    df_result['Доля'] = df_result['Сумма заказов РУБ']/ df_result['План Руб'] 
+    df_result['Ср. чек'] = df_result['Сумма заказов РУБ']/ df_result['Заказы Сайт, шт']
+    df_result['Ср. чек'] = pd.to_numeric(df_result['Ср. чек'],errors='coerce').astype('float32')
 
+    lines = df_result.apply(lambda X: text_func(X), axis=1)
+    text = "\n\n".join(lines)
+
+    await callback.message.edit_text(text, reply_markup=stats_keyboard())
+    await callback.answer
 
 # ---------- Клавиатуры---------
 # --- Главная клава
@@ -205,7 +234,7 @@ def stats_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="💰 Продажи", callback_data="stats:sales")
     builder.button(text="⬅️ Прошлый месяц", callback_data="stats:last_month")
     builder.button(text="⏳ Текущий месяц", callback_data="stats:current_month")
-    builder.button(text="⬅ Назад", callback_data="back_to_main")
+    builder.button(text="⬖️ Назад", callback_data="back_to_main")
     builder.adjust(1)  
     return builder.as_markup()
 
@@ -213,6 +242,7 @@ def stats_keyboard() -> InlineKeyboardMarkup:
 
 # --- Запуск 
 async def main():
+    await set_main_menu(bot)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
