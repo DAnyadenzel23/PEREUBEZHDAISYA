@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 
 
 # --- Конфигурация ---
-TOKEN = os.getenv("BOT_TOKEN", "8529846135:AAEz1MzQtR_QL2SItlt073gnwX0ntgit5dg")
+TOKEN = os.getenv("BOT_TOKEN", "ю")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -59,6 +59,17 @@ full_date  = yesterday.strftime('%d.%m.%Y')
 
 key = next((k for k, v in months_dict.items() if v == month), None)
 past_month = months_dict.get(key - 1) # Закрепляем в переменную значение предыдущего месяца
+
+# --- Получаем значения плана на текущий и прошедший месяцы
+sheet = client.open_by_key('1o1mIcsXQht1NFhgsq7CMKI3derC8xOSrRgGC9GYu144').worksheet(f'{month} {year}')
+data = sheet.get_all_values()
+df_alls = pd.DataFrame(data)
+Sales_goal_current = int(df_alls.iloc[0,34].replace('\xa0', '').replace(' ', ''))
+
+sheet_prev = client.open_by_key('1o1mIcsXQht1NFhgsq7CMKI3derC8xOSrRgGC9GYu144').worksheet(f'{month} {year}')
+data_prev = sheet_prev.get_all_values()
+df_alls_prev = pd.DataFrame(data)
+Sales_goal_prev = int(df_alls.iloc[0,34].replace('\xa0', '').replace(' ', ''))
 
 
 # --- Вспомогательная функция для предподготовнки табличных данных
@@ -187,6 +198,7 @@ def text_func(line):
                  f"🔵Доля выполнения плана на день: {line['Доля']:.2%}\n"
                  f"🔵Ср. чек: {line['Ср. чек']:.0f} руб.\n"
                  f"🔵CR оформленных заказов: {line['CTR оплаченного заказа']}")
+
         
 
 @router.callback_query(F.data == 'stats:sales')
@@ -219,6 +231,41 @@ async def stats_sales(callback: CallbackQuery):
 
     await callback.message.edit_text(text, reply_markup=stats_keyboard())
     await callback.answer
+
+
+
+@router.callback_query(F.data == 'stats:current_month')
+async def stats_current_month(callback: CallbackQuery):    
+    raw_df = await asyncio.to_thread(get_sample_data)
+    raw_df = raw_df[['Трафик', 'Уникальные', 'vs LY', 'Переход в каталог', 'Положил в корзину', 'Оформил заказ',
+                'План Руб', 'План Заказы', 'Заказы Сайт, шт', 'Сумма заказов РУБ']]
+    raw_df = raw_df.astype(str).replace(r'\s+', '', regex=True)
+    raw_df = raw_df.apply(pd.to_numeric, errors='coerce')
+    #raw_df = raw_df.iloc[:-1, :]
+
+    raw_df['CTR'] = raw_df['Заказы Сайт, шт']/ raw_df['Уникальные']
+    raw_df['AVG_check'] = raw_df['Сумма заказов РУБ']/ raw_df['Заказы Сайт, шт']
+    CTR_to_pay = 100 * raw_df['CTR'].mean()
+
+    count_of_days = int(raw_df.index[-1].day)
+    rest_days = count_of_days - int(raw_df[~raw_df['Сумма заказов РУБ'].isna()].index[-1].day)
+    predict = raw_df['Сумма заказов РУБ'].mean() * count_of_days
+    stg = (Sales_goal_current - raw_df['Сумма заказов РУБ'].sum())/ rest_days   #sales_per_day_to_goal
+    
+    text = f'Данные на {full_date}:\n\
+    🔴Сумма продаж в тек. месяце: {raw_df['Сумма заказов РУБ'].sum():,.2f}руб\n\
+    🔴Средний чек: {raw_df['AVG_check'].mean():,.2f}руб\n\
+    🔴CTR продажа-показ: {CTR_to_pay:,.2f}%\n\
+    🔴Факт: {(100*raw_df['Сумма заказов РУБ'].sum()/Sales_goal_current):,.2f}%\n\
+    🔴Прогноз продаж: {predict:,.2f}руб - {100*(predict/Sales_goal_current):,.2f}%\n\
+    🔴Необходимые продажи в день: {stg:,.2f}руб'
+
+    await callback.message.edit_text(text, reply_markup=stats_keyboard())
+    await callback.answer
+       
+
+
+
 
 # ---------- Клавиатуры---------
 # --- Главная клава
