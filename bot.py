@@ -469,7 +469,7 @@ def chart_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="💰 График2", callback_data="chart:chart2")
     builder.button(text="⬖️ Назад", callback_data="back_to_main")
     builder.adjust(2, 1)  
-    return builder.as_markup()
+    return builder.as_markup() 
 
 
 # --- Подменю статистики
