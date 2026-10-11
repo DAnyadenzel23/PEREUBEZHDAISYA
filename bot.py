@@ -20,7 +20,7 @@ import matplotlib as mpl
 mpl.style.use('ggplot')
 
 # --- Конфигурация ---
-TOKEN = os.getenv("BOT_TOKEN", "8869229955:AAEddtB8es48kh92WU48vVBbu6-6dFrgeKk")
+TOKEN = os.getenv("BOT_TOKEN", "u")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
